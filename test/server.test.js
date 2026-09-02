@@ -1812,22 +1812,32 @@ test("landing page lists several sessions and excludes an ended one", async () =
 
 test("landing page escapes a session file path containing markup-significant characters", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-landing-xss-"));
-  const evilDir = path.join(dir, `<script>alert(1)</script>&"'`);
-  await mkdir(evilDir, { recursive: true });
-  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const stateFile = path.join(dir, "state.json");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
   try {
-    const artifact = path.join(evilDir, "artifact.html");
+    // Windows forbids `<>:"|?*` in path names, so the XSS payload cannot live
+    // on disk. Open a real artifact under a safe path, then rewrite the stored
+    // `file` the landing page renders — that field is what must be escaped.
+    const artifact = path.join(dir, "artifact.html");
     await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
-    await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
+    const opened = await fetch(`http://127.0.0.1:${server.port}/api/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ file: artifact }),
-    });
+    }).then((response) => response.json());
+
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    const evilFile = path.join(dir, `<script>alert(1)</script>&"'`, "artifact.html");
+    state.sessions[opened.key].file = evilFile;
+    await writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
 
     const landing = await rawRequest(server.port, "/", { headers: { accept: "text/html" } });
     assert.equal(landing.status, 200);
     assert.doesNotMatch(landing.body, /<script>alert\(1\)<\/script>/);
-    assert.match(landing.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.match(landing.body, /&lt;script&gt;alert\(1\)&lt;\/script&gt;&amp;&quot;&#39;/);
+    // The path is interpolated into a title="..." attribute; unescaped quotes
+    // would terminate it. The escaped payload must sit inside one attribute.
+    assert.match(landing.body, /title="[^"]*&lt;script&gt;alert\(1\)&lt;\/script&gt;&amp;&quot;&#39;[^"]*"/);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
