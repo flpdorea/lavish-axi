@@ -1827,7 +1827,10 @@ test("landing page escapes a session file path containing markup-significant cha
     }).then((response) => response.json());
 
     const state = JSON.parse(await readFile(stateFile, "utf8"));
-    const evilFile = path.join(dir, `<script>alert(1)</script>&"'`, "artifact.html");
+    // Do not path.join the XSS payload: Windows treats `/` in `</script>` as a
+    // separator, so the stored path would become `...<\script>...` and the
+    // title-attribute assertion looking for `&lt;/script&gt;` would fail.
+    const evilFile = `${dir}${path.sep}<script>alert(1)</script>&"'${path.sep}artifact.html`;
     state.sessions[opened.key].file = evilFile;
     await writeFile(stateFile, `${JSON.stringify(state, null, 2)}\n`);
 
